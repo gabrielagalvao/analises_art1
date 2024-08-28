@@ -1,0 +1,1509 @@
+---
+title: "BIODEPTH"
+author: "Gabi"
+date: "`r Sys.Date()`"
+output: 
+      bookdown::html_document2:
+            toc: true
+            toc_float: 
+              collapsed: true
+              smooth_scroll: true
+            number_sections: false
+            keep_md: true
+---
+
+
+# Biodepth
+## Dados
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(multifunc)
+library(reshape2)
+library(car)
+library(vegan)
+library(FD)
+library(DT)
+library(glmmTMB)
+library(DHARMa)
+library(ggcorrplot)
+library(gridExtra)
+library(lme4)
+```
+
+
+
+### Biomassa
+```{r}
+BIOMASSA <- read.csv("biodepth/BiodepthSpeciesBiomass.csv", sep = ";", h=T)
+```
+Sweden e Sheffield não tem funções de solo medidas & 
+só tem funcoes medidas pra o ano 3 = vou filtrar esses
+```{r}
+BIOMASSA <- BIOMASSA %>%
+  filter(!(site %in% c("Sweden", "Sheffield"))) %>%
+  filter(year == 3)
+```
+
+```{r include=FALSE}
+#nome das especies
+SPECIES_CODE <- read.csv("biodepth/BiodepthSpeciesCodes.csv", sep=";", h=T)
+str(SPECIES_CODE)
+#nome completo das especies
+SPECIES_CODE <- SPECIES_CODE %>% 
+  mutate(species_name = paste(genus, species, sep=" "))
+
+SPECIES_CODE <- SPECIES_CODE  %>% 
+  mutate(species_name = case_when(
+    species_name == "Festuca pratensis" ~ "Festuca pratensis",
+    species_name == "Phleum pratense" ~ "Phleum pratense",
+    species_name == "Cynosorus cristatus" ~ "Cynosurus cristatus",
+    species_name == "Taraxacum officinale" ~ "Taraxacum campylodes",
+    species_name == "Tetragonolobus purpureus" ~ "Lotus tetragonolobus",
+    species_name == "Picris echioides" ~ "Helminthotheca echioides",
+    species_name == "Catananche lutea" ~ "Catananche jaune",
+    species_name == "Agropyron repens" ~ "Elymus repens",
+    TRUE ~ species_name
+  ))
+
+species_missing_list <- c("Bellevalia trifoliata", "Catananche jaune", "Securigera parviflora","Trifolium lappaceum", "Arabis divaricarpa","Bromus intermedius", "Buchloe dactyloides", "Eragrostis trichodes","Lagoecia cuminoides", "Lotus tetragonolobus", "Panicum ovale","Phalaris brachystachys", "Psoralea bituminosa", "Rudbeckia serotina","Tragopogon hybridus")
+
+quantas_tem <- SPECIES_CODE %>%
+  filter(species_name %in% species_missing_list) %>% 
+  distinct(species_name)
+
+#Tirar as especies que estão faltando traits
+SPECIES_CODE <- SPECIES_CODE %>%
+  filter(!species_name %in% species_missing_list)
+
+BIOMASSA <- BIOMASSA %>%
+  left_join(SPECIES_CODE, by = c("species" = "speciescode")) %>% 
+  na.omit()
+
+BIOMASSA <- BIOMASSA %>%
+  mutate(species = species_name) %>%
+  dplyr::select(-genus, -species_name, -species.y)
+
+#corrigir o nome de algumas especies
+BIOMASSA <- BIOMASSA %>%
+  mutate(species = case_when(
+    species == "Lychnis flos-cuculi" ~ "Lychnis flos cuculi",
+    species == "Bromus hordeaceushordeaceus" ~ "Bromus hordeaceus",
+    species == "Conyza floribunda" ~ "Conyza sumatrensis",
+    species == "Phalaris coerulescens" ~ "Phalaris aquatica",
+    species == "Hordeum geniculatum" ~ "Hordeum marinum",
+    TRUE ~ species
+  ))
+```
+
+```{r include=FALSE}
+TRAITS <- read.csv("TABELA_TRAITS_FINAL_MEDIA_TRY.csv", sep = ",", h=T)
+
+TRAITS <- TRAITS %>%
+  rename(
+    species = AccSpeciesName,
+    SLA = Leaf.area.per.leaf.dry.mass,
+    height = Plant.height.vegetative
+  ) %>% 
+  dplyr::select(species, SLA, height)
+
+TRAITS$species <- tolower(TRAITS$species)
+
+# Funcoes ####
+N_soil <- read.csv("biodepth/N.soil.csv", sep = ";", h=T)
+str(N_soil)
+N_soil <- N_soil %>% 
+  rename(site = location)
+
+
+DECOMPOSITION <- read.delim("biodepth/Decomposition.txt", header=T)
+str(DECOMPOSITION)
+
+DECOMPOSITION <- DECOMPOSITION %>% 
+  filter(!(location %in% c(6,7)))
+
+N_vegetation <- read.csv("biodepth/N.vegetation.csv", sep = ";", h=T)
+str(N_vegetation)
+N_vegetation <- N_vegetation %>% 
+  filter(!(location %in% c(6,7)))
+
+
+#padronizar os nomes colunas
+sites_location <- BIOMASSA %>%
+  dplyr::select(location, site) %>%
+  distinct()
+str(sites_location)
+
+DECOMPOSITION <- DECOMPOSITION %>%
+  left_join(sites_location, by = "location")
+DECOMPOSITION <- DECOMPOSITION %>% 
+  select(-location) 
+
+
+N_vegetation <- N_vegetation %>%
+  left_join(sites_location, by = "location")
+N_vegetation <- N_vegetation %>%
+  select(-location)
+
+full_funcoes <- DECOMPOSITION %>%
+  group_by(plot, site, block) %>%
+  full_join(N_vegetation, by = c("plot", "site", "block")) %>%
+  full_join(N_soil, by = c("plot", "site", "block"))
+```
+
+###Biomassa relativa
+```{r}
+BIOMASSA <- BIOMASSA %>%
+  group_by(year, site, block, plot) %>%
+  mutate(percentage_biomass = 100 * biomass / sum(biomass, na.rm = TRUE))
+
+datatable(BIOMASSA, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+
+ggplot(BIOMASSA, aes(x = biomass)) +
+  geom_histogram(binwidth = 10, fill = "lightblue", color = "black") +
+  labs(title = "Biomassa Biodepth", 
+       x = "Biomassa", 
+       y = "Frequência") +
+  theme_minimal()
+
+ggplot(BIOMASSA, aes(x = percentage_biomass)) +
+  geom_histogram(binwidth = 10, fill = "lightblue", color = "black") +
+  labs(title = "Biomassa relativa Biodepth", 
+       x = "Biomassa relativa", 
+       y = "Frequência") +
+  theme_minimal()
+```
+
+Passando de biomassa para composição de espécies 
+```{r message=FALSE, warning=FALSE}
+COMPOSICAO <- BIOMASSA %>% 
+  group_by(year,location,site,block,plot,sr,fr,fgc,mix.nest,mix,grass,forb,legume,funct,GRASS,FORB,LEG) %>% 
+  pivot_wider(
+    names_from = species,
+    values_from = percentage_biomass,
+    values_fill = list(percentage_biomass=0))
+
+#matrix de abundancia
+abundance <- COMPOSICAO %>%
+  ungroup() %>%
+  mutate(unique_plot = paste(plot, block, year, site, sep = "_")) %>%
+  group_by(unique_plot) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  column_to_rownames(var = "unique_plot") %>% 
+  dplyr::select(-year,-location, -sr, -fr,-fgc, -mix.nest, -mix, -biomass)
+
+# Cria a coluna 'riqueza' contando o número de espécies em cada plot
+abundance$riqueza <- rowSums(abundance > 0)
+abundance_filtrado <- abundance[abundance$riqueza > 3, ]
+abundance_filtrado$riqueza <- NULL
+
+#Remover espécies que não aparecem em nenhum plot
+abundance_filtrado <- abundance_filtrado[, colSums(abundance_filtrado, na.rm = TRUE) > 0]
+
+abundance_matrix <- as.matrix(abundance_filtrado)
+```
+
+
+### FUNCIONAL
+```{r include=FALSE}
+SPECIES <- data.frame(species = colnames(abundance_matrix))
+
+SPECIES$species <- tolower(SPECIES$species)
+
+TRAITS$species <- tolower(TRAITS$species) 
+TRAITS <- SPECIES %>%
+  inner_join(TRAITS, by = "species")
+
+missing_traits_species <- SPECIES %>%
+  anti_join(TRAITS, by = "species")
+
+# Diversidade funcional
+#nome da primeira coluna
+rownames(TRAITS) <- TRAITS$species
+TRAITS_rn <- TRAITS[,-1]
+
+#padronizar os traits (so continuo)######
+traits_padronizados <- decostand(TRAITS_rn, "standardize")
+
+traits_padronizados <- traits_padronizados[order(rownames(traits_padronizados)), ]
+#matriz distancia traits
+euclid_dis <- vegdist(traits_padronizados, "euclidean")
+trait_dat<- as.matrix(euclid_dis)
+colnames(abundance_matrix) <- tolower(trimws(colnames(abundance_matrix)))
+abundance_matrix <- abundance_matrix[, order(colnames(abundance_matrix))]
+```
+
+```{r}
+fd <- dbFD(trait_dat, abundance_matrix)
+Functional <- data.frame(raoq = fd$RaoQ, FRic = fd$FRic,FEve = fd$FEve, FDis = fd$FDis, FD = fd$nbsp )
+
+datatable(Functional, options= list(deferRender = TRUE,   scroller = TRUE,  scrollX=T, scrollY = "350px", autoWidth=T), rownames=T)
+
+hist(Functional$FRic)
+hist(Functional$raoq)
+```
+
+
+### MULTIFUNCIONALIDADE ####
+```{r include=FALSE}
+#juntar com a composicao de especies
+abundance2 <- abundance_filtrado %>%
+  rownames_to_column(var = "plot_block_year_site") %>%   separate(plot_block_year_site, into = c("plot", "block", "year", "site"), sep = "_")
+```
+
+```{r include=FALSE}
+abundance2$plot <- as.factor(abundance2$plot)
+abundance2$block <- as.factor(abundance2$block)
+abundance2$year <- as.factor(abundance2$year)
+full_funcoes$plot<- as.factor(full_funcoes$plot)
+full_funcoes$block<- as.factor(full_funcoes$block)
+
+abundance2 <- abundance2 %>% ungroup()
+full_funcoes <- full_funcoes %>%  ungroup()
+
+dataset_biodep <- abundance2 %>%
+  left_join(full_funcoes, by = c("plot", "site"))
+
+### averaging approach ####
+dataset_biodep <- dataset_biodep %>%
+  rename(
+    cotton = cotton3,
+    mass_gm2 = mass.g.m2,
+    Npercent = N.percent,
+    N_gm2 = N.g.m2,
+    N_total = N.total
+  )
+
+allVars <- qw(cotton, mass_gm2, N_total)
+
+vars <- allVars[allVars %in% names(dataset_biodep)]
+#Averaging approach
+dataset_biodep1 <- dataset_biodep %>%
+  ungroup()
+```
+
+```{r}
+multi <- cbind(dataset_biodep1, getStdAndMeanFunctions(dataset_biodep1, vars))
+```
+
+```{r include=FALSE}
+Functional <- Functional %>%
+  mutate(id = rownames(Functional))
+
+# Separar a coluna id em plot, treatment e year
+Functional <- Functional %>%
+  separate(id, into = c("plot", "block", "year", "site"), sep = "_", remove = FALSE)
+
+multi$plot <- as.factor(multi$plot)
+multi$year<- as.factor(multi$year)
+multi$site <- as.factor(multi$site)
+Functional$plot <- as.factor(Functional$plot)
+Functional$year <- as.factor(Functional$year)
+Functional$site <- as.factor(Functional$site)
+```
+
+## Dataset final
+```{r}
+dataset_final <- multi %>%
+  left_join(Functional, by = c("plot", "site"))
+
+datatable(dataset_final, options= list(deferRender = TRUE,    scroller = TRUE, scrollY = "350px", scrollX=T, autoWidth=T), rownames=T)
+```
+
+
+## Análise
+```{r include=FALSE}
+biodepth<- dataset_final[, c(1:4, 86:94)]
+
+# Correlação entre os inds de div Funcional
+cor_matrix <- cor(biodepth[, c("raoq", "FRic", "FEve", "FDis", "FD")], use = "complete.obs")
+```
+
+```{r}
+cor_matrix
+
+ggcorrplot(cor_matrix, 
+           method = "circle", 
+           type = "lower", 
+           lab = TRUE, 
+           title = "Índices de Diversidade Funcional")
+```
+
+
+### Mixed model
+```{r}
+mod1 <- glmmTMB(meanFunction ~ raoq + FRic + (1|site),data = biodepth[-46,])
+summary(mod1)
+
+mod_resid <- simulateResiduals(fittedModel = mod1, plot = FALSE)
+plot(mod_resid) # resíduos não tá normal
+outliers(mod_resid)
+
+ggplot(biodepth, aes(x = raoq, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(biodepth, aes(x = raoq, y = meanFunction, color = as.factor(site))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(site)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+```
+
+```{r}
+#Tirando países com poucas réplicas (outliers)
+biodepth_semot <- biodepth %>% 
+  filter(!site == "Portugal") %>%   
+  filter(!site == "Greece")
+
+mod1 <- glmmTMB(meanFunction ~ raoq + FRic + (1|site),data = biodepth_semot)
+summary(mod1)
+
+ggplot(biodepth_semot, aes(x = raoq, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(biodepth_semot, aes(x = raoq, y = meanFunction, color = as.factor(site))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(site)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(biodepth_semot, aes(x = FRic, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "FRic",
+       x = "FRic", y = "meanFunction") +
+  theme_get()
+
+ggplot(biodepth_semot, aes(x = FRic, y = meanFunction, color = as.factor(site))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(site)), method = "lm", se = FALSE) +
+  labs(title = "FRic",
+       x = "FRic", y = "meanFunction") +
+  theme_get()
+```
+
+
+
+# Ceedar Creek
+# e097  
+Avaliar o efeito de diferentes níveis de fertilização com nitrogênio em um experimento de competição de árvores.    
+
+9 TRTAMENTOS de adição de nitrogênio:    
+ 1: 0g/m²/ano nitrogênio (com micronutrientes)  
+ 2: 3g/m²/ano nitrogênio (com micronutrientes)  
+ 3: 6g/m²/ano  nitrogênio (com micronutrientes)  
+ 4: 10g/m²/ano nitrogênio (com micronutrientes)  
+ 5: 16g/m²/ano nitrogênio (com micronutrientes)  
+ 6: 28g/m²/ano nitrogênio (com micronutrientes)  
+ 7: 50g/m²/ano nitrogênio (com micronutrientes)  
+ 8: 80g/m²/ano nitrogênio (com micronutrientes)  
+ 9: 0g/m²/ano  (sem nitrogênio sem micronitrientes)  
+
+
+## Dados
+### Biomassa
+```{r}
+biomassa <- read.table("e097/e097_Plant aboveground biomass data.txt", h=T, sep="\t")
+```
+
+```{r include=FALSE}
+# Tratamentos
+biomassa$Ntrt <- as.factor(biomassa$Ntrt)
+
+# Corrigir coluna de data, só preciso do ano
+biomassa <- biomassa %>%
+  mutate(
+    Date = mdy(Sampling.date.mm.dd.yyyy.),
+    year = year(Date)
+  ) %>%
+  select(-Sampling.date.mm.dd.yyyy.) 
+```
+
+Filtrando o ano 1982 porque as funções foram coletadas aqui.
+```{r}
+biomassa <- biomassa %>%  
+  filter(year=="1982")
+```
+
+```{r include=FALSE}
+biomassa <- biomassa %>% 
+  mutate(Species.Name = case_when(
+    Species.Name == "Achillea millefolium(lanulosa)" ~ "Achillea millefolium",
+    Species.Name == "Euphorbia (supina)" ~ "Euphorbia maculata",
+    Species.Name == "Setaria lutescens" ~ "Pennisetum glaucum",
+    Species.Name == "Agropyron repens" ~ "Elymus repens",
+    Species.Name == "Ambrosia coronopifolia" ~ "Ambrosia psilostachya",
+    Species.Name == "Artemisia (caudata)" ~ "Artemisia ludoviciana",
+    Species.Name == "Polygonum convolvulus" ~ "Fallopia convolvulus",
+    Species.Name == "Polygonum persicaria" ~ "Persicaria maculosa",
+    Species.Name == "Polygonum pensylvanicum" ~ "Persicaria pensylvanica",
+    Species.Name == "Lychnis alba" ~ "Silene latifolia",
+    Species.Name == "Panicum praecocious" ~ "Panicum ovale",
+    Species.Name == "Oxybaphus hirsutus" ~ "Mirabilis hirsuta",
+    Species.Name == "Corylus americanus" ~ "Corylus americana",
+    Species.Name == "Aster azureus" ~ "Symphyotrichum oolentangiense",
+    Species.Name == "Comandra richardsiana" ~ "Comandra umbellata",
+    TRUE ~ Species.Name
+  ))
+
+
+#Especies que não tenho traits para
+species_missing_list <- c("Bellevalia trifoliata", "Catananche jaune", "Securigera parviflora","Trifolium lappaceum", "Arabis divaricarpa","Bromus intermedius", "Buchloe dactyloides", "Eragrostis trichodes","Lagoecia cuminoides", "Lotus tetragonolobus", "Panicum ovale","Phalaris brachystachys", "Psoralea bituminosa", "Rudbeckia serotina","Tragopogon hybridus")
+
+quantas_tem <- biomassa %>%
+  filter(Species.Name %in% species_missing_list) %>% 
+  distinct(Species.Name)
+
+#Tirar as especies que estão faltando traits
+biomassa <- biomassa %>%
+  filter(!Species.Name %in% species_missing_list)
+```
+
+Biomassa relativa
+```{r}
+biomassa <- biomassa %>%
+  group_by(Field, plot.number) %>%
+  mutate(percentage_biomass = 100 * Species.Biomass..g.m2. / sum(Species.Biomass..g.m2., na.rm = TRUE))
+
+datatable(biomassa, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+
+ggplot(biomassa, aes(x = percentage_biomass)) +
+  geom_histogram(binwidth = 10, fill = "lightblue", color = "black") +
+  labs(title = "Biomassa relativa CEDAR CREEK e97", 
+       x = "Biomassa relativa", 
+       y = "Frequência") +
+  theme_minimal()
+```
+
+```{r include=FALSE}
+biomassa97 <- biomassa %>%
+  group_by(Field, plot.number, Ntrt, NtrtReceived, NAdd.g.m2.yr.) %>% 
+  pivot_wider(
+    names_from = Species.Name, 
+    values_from = percentage_biomass, 
+    values_fill = list(percentage_biomass = 0)
+  ) %>%
+  mutate(across(where(is.numeric), ~ if_else(. > 0, 1, 0)))
+
+abundance_97 <- biomassa97 %>%
+  ungroup() %>%
+  mutate(unique_plot = paste(plot.number,Ntrt,Field, sep = "_")) %>%
+  group_by(unique_plot) %>% 
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  column_to_rownames(var = "unique_plot") %>% 
+  select(-Experiment.number, -NAdd.g.m2.yr., -NtrtReceived, -year, -plot.number, -Species.Biomass..g.m2.)
+
+abundance_97_matrix <- as.matrix(abundance_97)
+```
+
+###FUNCIONAL
+```{r include=FALSE}
+SPECIES <- data.frame(species = colnames(abundance_97))
+
+TRAITS <- read.csv("TABELA_TRAITS_FINAL_MEDIA_TRY.csv", sep = ",", h=T)
+
+TRAITS <- TRAITS %>%
+  rename(
+    species = AccSpeciesName,
+    SLA = Leaf.area.per.leaf.dry.mass,
+    height = Plant.height.vegetative
+  ) %>% 
+  select(species, SLA, height)
+
+TRAITS <- SPECIES %>%
+  inner_join(TRAITS, by = "species")
+
+missing_traits_species <- SPECIES %>%
+  anti_join(TRAITS, by = "species")
+missing_traits_species
+# Remover gêneros e coisas que não são espécies (vai fazer muita diferença? qual o procedimento aqui)
+# missing_traits_species$species
+# "Miscellaneous litter" "Cyperus sp."         
+# "Carex sp."            "Miscellaneous herbs" 
+# "Melilotus sp."
+
+abundance_97_df <- as.data.frame(abundance_97_matrix)
+species_to_remove <- missing_traits_species$species
+
+# Remover colunas do dataset abundance_97_df
+filteredbundance_97_df <- abundance_97_df %>%
+  select(-one_of(species_to_remove))
+
+#volta ele pra matrix
+abundance_97_matrix <- as.matrix(filteredbundance_97_df)
+
+
+# Diversidade funcional
+#nome da primeira coluna
+rownames(TRAITS) <- TRAITS$species
+TRAITS_rn <- TRAITS[,-1]
+
+#padronizar os traits (so continuo)
+traits_padronizados <- decostand(TRAITS_rn, "standardize")
+
+traits_padronizados  <- traits_padronizados[order(rownames(traits_padronizados)), ]
+
+#matriz distancia traits
+euclid_dis <- vegdist(traits_padronizados, "euclidean")
+
+trait_dat<- as.matrix(euclid_dis)
+abundance_97_matrix <- abundance_97_matrix[, order(colnames(abundance_97_matrix))]
+
+# Remover parcelas que ficaram com zero de abundancia pela falta dessas espécies
+zerobundance_communities <- rowSums(abundance_97_matrix) == 0
+abundance_matrix_clean <- abundance_97_matrix[!zerobundance_communities, ]
+```
+
+```{r}
+# Cálculo da diversidade funcional
+fd <- dbFD(trait_dat, abundance_matrix_clean)
+Functional <- data.frame(raoq = fd$RaoQ, FRic = fd$FRic,FEve = fd$FEve, FDis = fd$FDis, FD = fd$nbsp )
+
+datatable(Functional, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+```
+
+### MULTIFUNCIONALIDADE
+```{r include=FALSE}
+calcio<- read.table("e097/e097_Soil Calcium.txt", h=T,sep="\t")
+calcioFunc <- calcio %>% 
+  select(Plot.number, Field.letter, Calcium..ppm.Ca.in.soil.)
+
+magnesio<- read.table("e097/e097_Soil magnesium.txt", h=T,sep="\t")
+magnesioFunc <- magnesio %>% 
+  select(Plot.number, Field.letter, Magnesium..ppm.Mg.in.soil.)
+
+nitrogenio<- read.table("e097/e097_Soil nitrogen.txt", h=T,sep="\t")
+nitroFunc <- nitrogenio %>% 
+  filter(Year=="1982") %>% 
+  select(Plot.number,Field.letter, X..Nitrogen) %>% 
+  group_by(Plot.number, Field.letter) %>% 
+  summarize(avg_nitrogen = mean(X..Nitrogen, na.rm = TRUE)) 
+
+ph<- read.table("e097/e097_Soil pH.txt", h=T,sep="\t")
+phFunc <- ph %>% 
+  filter(substr(Sampling.date, 1, 2) == "82") %>% 
+  select(Plot.number,Field.letter, pH) %>% 
+  group_by(Plot.number, Field.letter) %>% 
+  summarize(avg_ph = mean(pH, na.rm = TRUE)) 
+
+fosforo<- read.table("e097/e097_Soil phosphorous.txt", h=T,sep="\t")
+fosforoFunc <- fosforo %>% 
+  filter(substr(Sampling.date, 1, 2) == "82") %>% 
+  select(Plot.number, Field.letter,Phosphorous..ppm.P.in.soil.)
+
+potassio<- read.table("e097/e097_Soil potassium.txt", h=T,sep="\t")
+potassioFunc <- potassio %>% 
+  filter(substr(Sampling.date, 1, 2) == "82") %>% 
+  select(Plot.number,Field.letter, Potassium..ppm.K.in.soil.)
+```
+
+```{r}
+#Dataset junto das funções
+funcoes <- potassioFunc %>%
+  full_join(fosforoFunc, by = c("Plot.number", "Field.letter")) %>%
+  full_join(calcioFunc, by = c("Plot.number", "Field.letter")) %>%
+  full_join(magnesioFunc, by = c("Plot.number", "Field.letter")) %>%
+  full_join(nitroFunc, by = c("Plot.number", "Field.letter")) %>%
+  full_join(phFunc, by = c("Plot.number", "Field.letter"))
+```
+
+```{r include=FALSE}
+#Juntar com composição de especies
+abundance2_97 <- abundance_97 %>%
+  rownames_to_column(var = "ID") %>% 
+  separate(ID, into = c("Plot.number", "treatment", "Field.letter"), sep = "_") 
+
+abundance2_97$Plot.number <- as.factor(abundance2_97$Plot.number)
+funcoes$Plot.number<- as.factor(funcoes$Plot.number)
+
+datset_97 <- abundance2_97 %>% 
+  left_join(funcoes, by=c("Plot.number", "Field.letter"))
+
+# MULTIFINCIONALIDADE: AVERAGING METHOD
+allVars <- qw(Potassium..ppm.K.in.soil., Phosphorous..ppm.P.in.soil.,avg_nitrogen, avg_ph)
+
+vars <-whichVars(datset_97, allVars)
+```
+
+```{r}
+e97_multifuncionalidade <- cbind(datset_97, getStdAndMeanFunctions(datset_97, vars))
+```
+
+```{r include=FALSE}
+#Dataset COMPLETO
+Functional <- Functional %>%
+  mutate(id = rownames(Functional))
+
+# Separar a coluna id em plot, treatment e year
+Functional <- Functional %>%
+  separate(id, into = c("Plot.number", "treatment", "Field.letter"), sep = "_", remove = FALSE)
+```
+## Dataset final
+```{r}
+dataset_final_e97 <- e97_multifuncionalidade %>%
+  left_join(Functional, by = c("Plot.number", "treatment", "Field.letter"))
+
+datatable(dataset_final_e97, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+
+```
+
+## Análise
+```{r include=FALSE}
+e97<- dataset_final_e97[, c(1:4, 90:96)]
+
+# Correlação entre os inds de div Funcional
+cor_matrix <- cor(e97[, c("raoq", "FRic", "FEve", "FDis", "FD")], use = "complete.obs")
+```
+
+```{r}
+cor_matrix
+
+ggcorrplot(cor_matrix, 
+           method = "circle", 
+           type = "lower", 
+           lab = TRUE, 
+           title = "Índices de Diversidade Funcional")
+```
+
+
+### Mixed model
+```{r}
+mod1 <- glmmTMB(log(meanFunction) ~ raoq + FRic + (1|Field.letter),data = e97)
+summary(mod1)
+
+mod_resid <- simulateResiduals(fittedModel = mod1, plot = FALSE)
+plot(mod_resid) # resíduos não tá normal
+outliers(mod_resid)
+
+ggplot(e97, aes(x = raoq, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(e97, aes(x = raoq, y = meanFunction, color = as.factor(Field.letter))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(Field.letter)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+```
+
+```{r}
+#Tirando outliers
+e97_semot <- e97 %>% 
+  filter(!raoq <40) %>%   
+  filter(!meanFunction >0.9)
+
+mod1 <- glmmTMB(meanFunction ~ raoq + FRic + (1|Field.letter),data = e97_semot)
+summary(mod1)
+
+ggplot(e97_semot, aes(x = raoq, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(e97_semot, aes(x = raoq, y = meanFunction, color = as.factor(Field.letter))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(Field.letter)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(biodepth_semot, aes(x = FRic, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "FRic",
+       x = "FRic", y = "meanFunction") +
+  theme_get()
+
+```
+
+# e120
+Biodiversity II, effects od plant biodiversity on population and ecossystem process 
+
+- Determinar como a quantidade de espécies de plantas afeta processos ecológicos nos níveis populacional, de comunidade e ecossistêmico. Como a diversidade de plantas influencia a produção de biomassa, a estabilidade do ecossistema, a incidência de doenças, a diversidade de insetos herbívoros e predadores, e outros parâmetros do solo.
+
+168 parcelas de 9m x 9m.
+
+Tratamentos: 
+Parcelas com 1, 2, 4, 8 ou 16 espécies de plantas, com cerca de 30 réplicas para cada nível de diversidade.
+
+## COMPOSIÇÃO DAS ESPECIES
+```{r include=FALSE}
+COVER <- read.table("e120/e120_Plant species percent cover data.txt", h=T, sep="\t")
+
+#Apenas nesses anos todas as medidas
+cover <- COVER %>%
+  filter(Year %in% c(1996, 2000)) %>% 
+  select(Year, Plot, Quadrat, Species, Abscover)
+
+cover$Species <-tolower(cover$Species)
+cover <- cover %>%
+   mutate(Species = str_trim(Species))
+
+ cover <- cover %>% 
+      mutate(Species = case_when(
+    Species == "polygonum convolvulus" ~ "fallopia convolvulus",
+    Species == "agropyron repens" ~ "elymus repens",
+    Species == "achillea millefolium(lanulosa)" ~ "achillea millefolium",
+    Species == "aster azureus" ~ "symphyotrichum oolentangiense",
+    Species == "setaria lutescens" ~ "pennisetum glaucum",
+    Species == "lychnis alba" ~ "silene latifolia",
+    Species == "bouteloua gracilis" ~ "chondrosum gracile",
+    Species == "ambrosia artemisiifolia elatio" ~ "ambrosia artemisiifolia",
+    Species == "ambrosia artemisiifolia elatior" ~ "ambrosia artemisiifolia",
+    Species == "koeleria cristata" ~ "koeleria pyramidata",
+    Species == "tragopogon dubius (major)" ~ "tragopogon dubius",
+    Species == "petalostemum purpureum" ~ "dalea purpurea",
+    Species == "agropyron smithii" ~ "elymus smithii",
+    Species == "artemisia (caudata) campestris" ~ "artemisia campestris",
+    Species == "taraxicum officinalis" ~ "taraxacum campylodes",
+Species == "agrostis alba" ~ "agrostis gigantea",
+Species == "baptisia leucantha" ~ "baptisia alba",
+Species == "panicum praecocious" ~ "panicum ovale",
+Species == "gnaphalium obtusifolium" ~ "pseudognaphalium obtusifolium",
+Species == "polygonatum canaliculatum" ~ "polygonatum biflorum",
+Species == "taraxacum officinalis" ~ "taraxacum campylodes",
+Species == "bouteloua hirsuta" ~ "chondrosum hirsutum",
+Species == "leptaloma cognata" ~ "leptoloma cognatum",
+Species == "penstemon gracilis" ~ "penstemon digitalis",
+Species == "agropyron repens" ~ "elymus repens",
+Species == "polygonum convolvulus" ~ "fallopia convolvulus",
+Species == "bouteloua gracilis" ~ "chondrosum gracile",
+Species == "achillea millefolium(lanulosa)" ~ "achillea millefolium",
+Species == "setaria lutescens (glauca)" ~ "pennisetum glaucum",
+Species == "erigeron anuus" ~ "erigeron annuus",
+Species == "cassia fasciculata" ~ "chamaecrista fasciculata",
+Species == "paspalum ciliatifolium" ~ "paspalum setaceum",
+Species == "ambrosia coronopifolia" ~ "ambrosia psilostachya",
+Species == "leptaloma cognatum" ~ "leptoloma cognatum",
+    TRUE ~ Species
+  ))
+
+
+species_missing_list <- c("bellevalia trifoliata", "catananche jaune", "securigera parviflora","trifolium lappaceum", "arabis divaricarpa","bromus intermedius", "buchloe dactyloides", "eragrostis trichodes","lagoecia cuminoides", "lotus tetragonolobus", "panicum ovale","phalaris brachystachys", "psoralea bituminosa", "rudbeckia serotina","tragopogon hybridus")
+ 
+ quantas_tem <- cover %>%
+   filter(Species %in% species_missing_list) %>% 
+   distinct(Species)
+ 
+#Tirar as especies que estão faltando traits
+cover <- cover %>%
+   filter(!Species %in% species_missing_list)
+
+#Tabela de traits
+TRAITS <- read.csv("TABELA_TRAITS_FINAL_MEDIA_TRY.csv", h=T)
+
+#Transformar os nomes das espécies em minúsculas para garantir a correspondência
+TRAITS <- TRAITS %>%
+  rename(Species = AccSpeciesName) %>%
+  mutate(Species = tolower(Species))
+
+# Filtrar Espécies com Dados de Traits Disponíveis
+SPECIES_120 <- data.frame(Species = unique(cover$Species)) %>%
+  mutate(Species = tolower(Species))
+
+TRAITS_120 <- TRAITS %>%
+  inner_join(SPECIES_120, by = "Species")
+
+# Identificar as espécies que precisam ser removidas
+missing_traits_species <- SPECIES_120 %>%
+  anti_join(TRAITS, by = "Species")
+
+species_to_remove <- missing_traits_species$Species
+
+# Filtrar a tabela de cobertura removendo as espécies que não têm dados de traits
+cover <- cover %>%
+  filter(!Species %in% species_to_remove)
+```
+
+```{r}
+
+datatable(cover, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+
+# Calcular a cobertura relativa por quadrante dentro de cada plot
+cover <- cover %>%
+  group_by(Year, Plot, Quadrat) %>%
+  mutate(percentage_cover = 100 * Abscover / sum(Abscover, na.rm = TRUE))
+
+# Somar a cobertura por espécie dentro de cada plot e ano
+cover <- cover %>%
+  group_by(Year, Plot, Species) %>%
+  summarize(Total_Abscover = sum(percentage_cover, na.rm = TRUE)) %>%
+  ungroup()
+
+# Padronizar para que a soma total seja 100% dentro de cada plot
+cover <- cover %>%
+  group_by(Year, Plot) %>%
+  mutate(cover_final = 100 * Total_Abscover / sum(Total_Abscover, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(cover, aes(x = Total_Abscover)) +
+geom_histogram(bins = 50, fill = "blue", color = "black")
+
+ggplot(cover, aes(x = cover_final)) +
+  geom_histogram(bins = 50, fill = "blue", color = "black")
+```
+
+```{r include=FALSE}
+
+# Criar a Matriz de Abundância
+COMPOSICAO_120 <- cover %>%
+  pivot_wider(names_from = Species, values_from = cover_final, values_fill = list(cover_final = 0))
+
+abundance_120 <- COMPOSICAO_120 %>% 
+  ungroup() %>% 
+  mutate(unique_plot = paste(Plot, Year, sep = "_")) %>% 
+  group_by(unique_plot) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  column_to_rownames(var = "unique_plot") %>% 
+  select(-Year,-Plot, -Total_Abscover)
+
+abundance_120_matrix <- as.matrix(abundance_120)
+```
+## FUNCIONAL
+```{r include=FALSE}
+#nome da primeira coluna
+rownames(TRAITS_120) <- TRAITS_120$Species
+TRAITS_rn <- TRAITS_120[,-c(1,2)]
+
+#padronizar os traits (so continuo)
+traits_padronizados <- decostand(TRAITS_rn, "standardize")
+
+traits_padronizados  <- traits_padronizados[order(rownames(traits_padronizados)), ]
+
+#matriz distancia traits
+euclid_dis <- vegdist(traits_padronizados, "euclidean")
+
+trait_dat_120<- as.matrix(euclid_dis)
+abundance_120_matrix <- abundance_120_matrix[, order(colnames(abundance_120_matrix))]
+
+
+#rremover quem ficou com zero abundancia pq tirei esses coisas
+zero_abundance_communities <- rowSums(abundance_120_matrix) == 0
+abundance_120_matrix_clean <- abundance_120_matrix[!zero_abundance_communities, ]
+```
+
+
+```{r}
+fd_120 <- dbFD(trait_dat_120, abundance_120_matrix_clean)
+Functional_120 <- data.frame(raoq = fd_120$RaoQ, FRic = fd_120$FRic,FEve = fd_120$FEve, FDis = fd_120$FDis, FD = fd_120$nbsp )
+
+hist(Functional_120$raoq)
+hist(Functional_120$FRic)
+```
+
+
+
+## MULTIFUNCIONALIDADE
+```{r include=FALSE}
+carbon_nitro <- read.table("e120/e120_Plant aboveground biomass carbon and nitrogen.txt", h=T, sep="\t")
+
+carbon_nitroFunc <- carbon_nitro %>%
+  filter(Year >= 1996 & Year <= 2006) %>%
+  group_by(Year, Plot) %>%
+  summarise(
+    Total_Nb = sum(pTotalNb, na.rm = TRUE),
+    Total_Cb = sum(pTotalCb, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+
+biomass <- read.table("e120/e120_Plant aboveground biomass.csv", h=T, sep=",")
+biomassaFunc <- biomass %>%
+  filter(Year >= 1996 & Year <= 2006) %>%
+  group_by(Year, Plot) %>%
+  summarise(
+    Total_Biomass = sum(Biomass..g.m2., na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+
+soil_carbon <- read.table("e120/e120_Soil carbon.txt", h=T, sep="\t")
+soil_carbonFunc <- soil_carbon %>%
+  filter(Year >= 1996 & Year <= 2006) %>%
+  group_by(Year, Plot) %>%
+  summarise(
+    Total_Soil_carbon = sum(pTotalCs, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+
+nitrat_amoni <- read.table("e120/e120_Soil nitrate and ammonium.txt", h=T, sep="\t")
+nitrat_amoniFunc <- nitrat_amoni %>%
+  filter(Year >= 1996 & Year <= 2006) %>%
+  group_by(Year, Plot) %>%
+  summarise(
+    Total_Soil_NO2NO3 = sum(NO2NO3, na.rm = TRUE),
+    Total_Soil_NH4 = sum(NH4, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+
+soil_nitro <- read.table("e120/e120_Soil nitrogen.txt", h=T, sep="\t")
+soil_nitroFunc <- soil_nitro %>%
+  filter(Year >= 1996 & Year <= 2006) %>%
+  group_by(Year, Plot) %>%
+  summarise(
+    Total_Soil_nitro = sum(pTotalNs, na.rm = TRUE),
+    .groups = 'drop'
+  )
+```
+
+```{r}
+#quantidades de amostragem tudo diferente nos anos 
+#carbon_nitroFunc 1164
+#biomassaFunc 1862
+#soil_carbonFunc 726
+#nitrat_amoniFunc 1194
+#soil_nitroFunc 726
+
+data_list <- list(carbon_nitroFunc, biomassaFunc, soil_carbonFunc, nitrat_amoniFunc, soil_nitroFunc)
+combined_data <- reduce(data_list, full_join, by = c("Year", "Plot"))
+
+#remover todos os dados ausentes
+#so sobra 1996 e 2000
+funcoes_120 <- na.omit(combined_data)
+
+```
+
+```{r include=FALSE}
+#Juntar com composição de especies
+composicao_120_fim <- abundance_120 %>%
+  rownames_to_column(var = "rowname") %>%
+  separate(rowname, into = c("Plot", "Year"), sep = "_") %>%
+  mutate(
+    plot = as.factor(Plot),
+    year = as.factor(Year)
+  )
+
+funcoes_120$Plot <- as.factor(funcoes_120$Plot)
+funcoes_120$Year <- as.factor(funcoes_120$Year)
+
+dataset_120 <- left_join(composicao_120_fim, funcoes_120, by = c("Plot", "Year"))
+
+allVars120 <- qw(Total_Nb, Total_Cb, Total_Biomass, Total_Soil_carbon, Total_Soil_NO2NO3, Total_Soil_NH4, Total_Soil_nitro)
+
+vars120 <-whichVars(dataset_120, allVars120)
+```
+
+```{r}
+e120_multifuncionalidade <- cbind(dataset_120, getStdAndMeanFunctions(dataset_120, vars120))
+```
+
+## Dataset COMPLETO
+
+```{r include=FALSE}
+
+Functional_120 <- Functional_120 %>%
+  mutate(id = rownames(Functional_120))
+
+Functional_120 <- Functional_120 %>%
+  separate(id, into = c("Plot", "Year"), sep = "_", remove = FALSE)
+```
+
+```{r}
+
+dataset_final_120 <- e120_multifuncionalidade %>%
+  left_join(Functional_120, by = c("Plot", "Year")) 
+
+datatable(dataset_final_120, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+
+```
+
+
+```{r}
+
+#Vou apenas cortar
+##Help####
+#dataset_final_120 <- dataset_final_120 %>% 
+ # filter(FDis < 10, raoq < 50, FRic < 200)
+```
+
+
+## Análise
+```{r include=FALSE}
+e120<- dataset_final_120[, c(1:2, 108:114)]
+
+# Correlação entre os inds de div Funcional
+cor_matrix <- cor(e120[, c("raoq", "FRic", "FEve", "FDis", "FD")], use = "complete.obs")
+```
+
+```{r}
+cor_matrix
+
+ggcorrplot(cor_matrix, 
+           method = "circle", 
+           type = "lower", 
+           lab = TRUE, 
+           title = "Índices de Diversidade Funcional")
+```
+
+
+### Mixed model
+```{r}
+mod1 <- glmmTMB(log(meanFunction) ~ raoq + FRic + (1|Year),data = e120)
+summary(mod1)
+
+mod_resid <- simulateResiduals(fittedModel = mod1, plot = FALSE)
+plot(mod_resid) # resíduos não tá normal
+outliers(mod_resid)
+
+ggplot(e120, aes(x = raoq, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(e120, aes(x = raoq, y = meanFunction, color = as.factor(Year))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(Year)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+```
+
+```{r}
+#Tirando outliers
+e120_semot <- e120 %>% 
+  filter(!raoq >100) %>% 
+  filter(!FRic >150)
+
+mod1 <- glmmTMB(meanFunction ~ raoq + FRic + (1|Year),data = e120_semot)
+summary(mod1)
+
+ggplot(e120_semot, aes(x = raoq, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(e120_semot, aes(x = raoq, y = meanFunction, color = as.factor(Year))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(Year)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(e120_semot, aes(x = FRic, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "FRic",
+       x = "FRic", y = "meanFunction") +
+  theme_get()
+
+
+ggplot(e120_semot, aes(x = FRic, y = meanFunction, color=as.factor(Year))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(Year)), method = "lm", se = FALSE) +
+  labs(title = "FRic",
+       x = "FRic", y = "meanFunction") +
+  theme_get()
+
+```
+
+# Jena dBEF
+
+Tratamento 1 - Sem história de solo e sem história de plantas:
+O solo e a camada de plantas foram removidos até 30 cm de profundidade e substituídos por solo de um campo arável adjacente. 
+Tratamento 2 - Com história de solo, mas sem história de plantas:
+A camada de plantas foi removida, mas o solo original foi mantido.
+Tratamento 3 - Com história de solo e de plantas:
+As parcelas existentes do experimento principal, estabelecidas desde 2002, foram mantidas como controle de longo prazo, mantendo tanto a história do solo quanto a das plantas.
+Esses tratamentos foram projetados para testar como a história do solo e das plantas influenciam a produtividade vegetal e as interações ecológicas ao longo do tempo, considerando tanto a diversidade de plantas quanto os efeitos do histórico do solo sobre a biomassa e outros fatores ecológicos.
+
+```{r include=FALSE}
+#Função para ajustar nomes de espécies
+ajustar_nome_especie <- function(nome) {
+  nome %>% str_replace_all("(\\.)", " ") %>% str_trim()
+}
+```
+
+80 plots
+3 tratamentos
+3 anos
+
+## COMPOSIÇÃO DAS ESPÉCIES: cobertura
+```{r}
+cobertura_2017 <- read.csv("dbef/PLANT_COVER_2017.csv", sep = ";")
+cobertura_2018 <- read.csv("dbef/PLANT_COVER_2018.csv", sep = ";")
+cobertura_2019 <- read.csv("dbef/PLANT_COVER_2019.csv", sep = ";")
+
+cobertura_total <- bind_rows(cobertura_2017, cobertura_2018, cobertura_2019)
+datatable(cobertura_total, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+
+
+```
+
+```{r include=FALSE}
+#ajeitando manualmente alguns nomes de especies
+especies <- read.csv("dbef/species_list.csv", sep = ";") %>%
+  mutate(full_name = case_when(
+    full_name == "Achillea millefolium agg." ~ "Achillea millefolium",
+    full_name == "Galium mollugo agg." ~ "Galium mollugo",
+    full_name == "Medicago x varia" ~ "Medicago sativa",
+    full_name == "Taraxacum officinale agg." ~ "Taraxacum campylodes",
+    full_name == "Pastinacea sativa" ~ "Pastinaca sativa",
+    full_name == "Onobrychnis viciifolia" ~ "Onobrychis viciifolia",
+    full_name == "Leucanthemum vulgare agg." ~ "Leucanthemum vulgare",
+    full_name == "Cirsium olearaceum" ~ "Cirsium oleraceum",
+    full_name == "Arrhenaterum elatius" ~ "arrhenatherum elatius",
+    full_name == "Leontodon autumnalis" ~ "Scorzoneroides autumnalis",
+    full_name == "Avenula pubescens" ~ "Helictotrichon pubescens",
+    TRUE ~ full_name
+  ))
+
+#adicionando o nome completo das espécies
+cobertura_total <- cobertura_total %>%
+  rename(short_name = species_other) %>%
+  left_join(especies, by = "short_name") %>%
+  mutate(species = coalesce(full_name, short_name)) %>%
+  select(-short_name, -full_name)
+
+cobertura_media <- cobertura_total %>%
+  group_by(plot, treatment, year, species) %>%
+  summarise(mean_cover = mean(cover, na.rm = TRUE), .groups = 'drop') %>%
+  pivot_wider(names_from = species, values_from = mean_cover, values_fill = list(mean_cover = 0))
+
+#matrix de abundancia
+abundance_dbef<- cobertura_media %>%
+  ungroup() %>%
+  mutate(unique_plot = paste(plot, treatment, year, sep = "_")) %>%
+  group_by(unique_plot) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  column_to_rownames(var = "unique_plot") %>% 
+  select(-year)
+
+# Remover especies que não aparecem em nenhum plot
+abundance_dbef <- abundance_dbef[, colSums(abundance_dbef) > 0]
+
+#Remover plots sem nenhuma especie
+abundance_dbef <- abundance_dbef[ rowSums(abundance_dbef) > 0,]
+
+abundance_dbef_matrix <- as.matrix(abundance_dbef)
+
+## FUNCIONAL ####  
+SPECIES_dbef <- data.frame(species = colnames(abundance_dbef_matrix))
+SPECIES_dbef$species <- tolower(SPECIES_dbef$species)
+
+TRAITS <- read.csv("TABELA_TRAITS_FINAL_MEDIA_TRY.csv", sep = ",", h=T)
+
+TRAITS <- TRAITS %>%
+  rename(
+    species = AccSpeciesName,
+    SLA = Leaf.area.per.leaf.dry.mass,
+    height = Plant.height.vegetative
+  ) %>% 
+  select(species, SLA, height)
+
+TRAITS$species <- tolower(TRAITS$species)
+
+TRAITS_dbef <- SPECIES_dbef %>%
+  inner_join(TRAITS, by = "species")
+
+missing_traits_species <- SPECIES_dbef %>%
+  anti_join(TRAITS, by = "species")
+
+# Remover
+#"bareground"   "dead"        
+#"higherplants" "moss"        
+#"target"       "weed" 
+colnames(abundance_dbef_matrix) <- tolower(trimws(colnames(abundance_dbef_matrix)))
+abundance_dbef_df <- as.data.frame(abundance_dbef_matrix)
+
+columns_to_remove <- c("bareground", "dead", "higherplants", "moss", "target", "weed")
+abundance_dbef_df <- abundance_dbef_df %>%
+  select(-all_of(columns_to_remove))
+
+abundance_dbef_matrix <- as.matrix(abundance_dbef_df)
+
+# Diversidade funcional
+#nome da primeira coluna
+rownames(TRAITS_dbef) <- TRAITS_dbef$species
+TRAITS_dbef_rn <- TRAITS_dbef[,-1]
+
+#padronizar os traits (so continuo)
+traits_padronizados_dbef <- decostand(TRAITS_dbef_rn, "standardize")
+
+traits_padronizados_dbef  <- traits_padronizados_dbef[order(rownames(traits_padronizados_dbef)), ]
+#matriz distancia traits
+euclid_dis_dbef <- vegdist(traits_padronizados_dbef, "euclidean")
+
+trait_dat_dbef<- as.matrix(euclid_dis_dbef)
+abundance_dbef_matrix <- abundance_dbef_matrix[, order(colnames(abundance_dbef_matrix))]
+
+
+#rremover quem ficou com zero abundancia pq tirei esses coisas
+zero_abundance_communities <- rowSums(abundance_dbef_matrix) == 0
+abundance_dbef_matrix_clean <- abundance_dbef_matrix[!zero_abundance_communities, ]
+
+```
+
+## FUNCIONAL
+```{r}
+#diversidade funcional
+fd_dbef <- dbFD(trait_dat_dbef, abundance_dbef_matrix_clean)
+Functional_dbef <- data.frame(raoq = fd_dbef$RaoQ, FRic = fd_dbef$FRic,FEve = fd_dbef$FEve, FDis = fd_dbef$FDis, FD = fd_dbef$nbsp )
+
+datatable(Functional_dbef, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+```
+
+
+## MULTIFUNCIONALIDADE ####
+```{r include=FALSE}
+# Biomassa
+biomassa_2017 <- read.csv("dbef/biomass_2017.csv", sep = ",")
+biomassa_2018 <- read.csv("dbef/biomass_2018.csv", sep = ",")
+biomassa_2019 <- read.csv("dbef/biomass_2019.csv", sep = ";")
+
+biomass <- bind_rows(biomassa_2017, biomassa_2018, biomassa_2019)
+
+#ajeitando nome das espécies pra corresponder
+biomass <- biomass %>%
+  rename(short_name = species_other)
+
+convert_species_name <- function(name) {
+  parts <- strsplit(name, "\\.")[[1]]
+  parts <- sapply(parts, function(part) {
+    paste0(toupper(substring(part, 1, 1)), substring(part, 2))
+  })
+  name <- paste0(parts, collapse = "")
+  return(name)
+}
+
+# Aplicar a função na coluna short_name da tabela species
+especies1 <- especies %>%
+  mutate(short_name = sapply(short_name, convert_species_name))
+
+biomass <- biomass %>%
+  left_join(especies1, by = "short_name")
+
+#problema: valores negativos na biomassa - já vem assim no dataset
+#solucao: vou remover
+biomass_cleaned <- biomass %>%
+  mutate(biomass = ifelse(biomass < 0, NA, biomass))
+
+#problema: biomassa tá por espécies (quero por plot)
+#somei 
+####(tá certo?)####
+biomass_summary <- biomass_cleaned %>%
+  group_by(plot, year) %>%
+  summarise(total_biomass = sum(biomass, na.rm = TRUE)) %>% 
+  separate(plot, into = c("plot", "treatment"), sep = "(?<=\\d)(?=D)") 
+
+# Atividade Microbiana ####
+atv_micro_2017 <- read.csv("dbef/atv_micro_2017.csv", sep = ",")
+atv_micro_2018 <- read.csv("dbef/atv_micro_2018.csv", sep = ",")
+atv_micro_2019 <- read.csv("dbef/atv_micro_2019.csv", sep = ",")
+
+atv_micro_total <- bind_rows(atv_micro_2017, atv_micro_2018, atv_micro_2019) 
+
+#retirar valores negativos (nao faz sentido)
+atv_micro_total <-  atv_micro_total %>% 
+  filter(basal_respiration >= 0,
+         soil_microbial_biomass_C >= 0,
+         respiratory_quotient >= 0,
+         soil_water_content >= 0) 
+
+atv_micro_total <- atv_micro_total %>%
+  separate(plot, into = c("plot", "treatment"), sep = "(?<=\\d)(?=D)") %>% group_by(plot, treatment, year) 
+
+#tireia media de plots e medidas iguais 
+atv_micro <- atv_micro_total %>%
+  summarise(across(c(basal_respiration, soil_microbial_biomass_C, respiratory_quotient, soil_water_content), ~ mean(.x, na.rm = TRUE)), .groups = 'drop')
+
+str(atv_micro)
+
+# Herbivoria ####
+herbivoria_2017 <- read.csv("dbef/herbivoria_2017.csv", sep = ",")
+herbivoria_2018 <- read.csv("dbef/herbivoria_2018.csv", sep = ",")
+herbivoria_2019 <- read.csv("dbef/herbivoria_2019.csv", sep = ",")
+
+herbivoria_total <- bind_rows(herbivoria_2017, herbivoria_2018, herbivoria_2019)
+
+# Predação Acima do Solo ####
+predacao_2017 <- read.csv("dbef/predation_2017.csv", sep = ",")
+predacao_2018 <- read.csv("dbef/predation_2018.csv", sep = ",")
+predacao_2019 <- read.csv("dbef/predation_2019.csv", sep = ",")
+
+predacao_total <- bind_rows(predacao_2017, predacao_2018, predacao_2019)
+
+#separar plot de tratamento, reorganizar a tabela
+predacao <- predacao_total %>%  separate(plotcode, into = c("plot", "treatment"), sep = "(?<=\\d)(?=D)") %>% group_by(plot, treatment, year) %>%
+  filter(BiteMark_presence == 1) %>%
+  mutate(BiteMark_type = paste0("bitemark_", BiteMark_type)) %>%
+  pivot_wider(names_from = BiteMark_type, values_from = BiteMark_presence, values_fill = list(BiteMark_presence = 0)) %>%
+  group_by(plot, treatment, year) %>%
+  summarise(across(starts_with("bitemark_"), sum, na.rm = TRUE), .groups = 'drop')
+
+
+#Averaging ####
+
+# tds as combinacoes
+base <- expand.grid(plot = unique(cobertura_media$plot), treatment = unique(cobertura_media$treatment), year = unique(cobertura_media$year))
+```
+
+```{r}
+# Combinar os Dados com a Base
+dados_combinados <- base %>%
+  left_join(cobertura_media, by = c("plot", "treatment", "year")) %>%
+  left_join(biomass_summary, by = c("plot", "treatment", "year")) %>%
+  left_join(atv_micro, by = c("plot", "treatment", "year")) %>%
+  left_join(herbivoria_total, by = c("plot", "treatment", "year")) %>%
+  left_join(predacao, by = c("plot", "treatment", "year"))
+```
+
+```{r include=FALSE}
+# Verificar e Ajustar os Nomes das Colunas
+names(dados_combinados) <- c("plot", "treatment", "year", names(dados_combinados)[4:length(names(dados_combinados))])
+
+
+
+
+# Funções ecológicas a serem analisadas
+func_vars <- c("total_biomass", "basal_respiration", "soil_microbial_biomass_C", "respiratory_quotient", "soil_water_content", "percHerb", "consBM", "bitemark_arthropod", "bitemark_grasshopper", "bitemark_insect_other", "bitemark_mammal")
+
+
+# Calcular a média e padronizar as funções
+dbef_multifunc <- dados_combinados %>%
+  bind_cols(getStdAndMeanFunctions(dados_combinados, func_vars, standardizeZScore))
+```
+
+```{r}
+dbef_multifunc <- cbind(dados_combinados, getStdAndMeanFunctions(dados_combinados, func_vars))
+```
+
+## DATASET COMPLETAO 
+```{r include=FALSE}
+Functional_dbef <- Functional_dbef %>%
+  mutate(id = rownames(Functional_dbef))
+
+# Separar a coluna id em plot, treatment e year
+Functional_dbef <- Functional_dbef %>%
+  separate(id, into = c("plot", "treatment", "year"), sep = "_", remove = FALSE)
+
+dbef_multifunc <- dbef_multifunc %>%
+  mutate(year = as.character(year))
+
+Functional_dbef <- Functional_dbef %>%
+  mutate(year = as.character(year))
+```
+
+```{r}
+dataset_final_JENA <- dbef_multifunc %>%
+  left_join(Functional_dbef, by = c("plot", "treatment", "year"))
+
+datatable(dataset_final_JENA, options= list(deferRender = TRUE,  scrollY = "350px", scrollX=T,   scroller = TRUE,  autoWidth=T), rownames=T)
+```
+
+# Análise
+
+```{r include=FALSE}
+jena<- dataset_final_JENA[, c(1:3, 94:100)]
+
+# Correlação entre os inds de div Funcional
+cor_matrix <- cor(jena[, c("raoq", "FRic", "FEve", "FDis", "FD")], use = "complete.obs")
+```
+
+```{r}
+cor_matrix
+
+ggcorrplot(cor_matrix, 
+           method = "circle", 
+           type = "lower", 
+           lab = TRUE, 
+           title = "Índices de Diversidade Funcional")
+```
+
+
+### Mixed model
+```{r}
+mod1 <- glmmTMB(meanFunction ~ raoq + FRic + (1|year),data = jena)
+summary(mod1)
+
+mod_resid <- simulateResiduals(fittedModel = mod1, plot = FALSE)
+plot(mod_resid) # resíduos não tá normal
+outliers(mod_resid)
+
+ggplot(jena, aes(x = raoq, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(jena, aes(x = raoq, y = meanFunction, color = as.factor(year))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(year)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+ggplot(jena, aes(x = raoq, y = meanFunction, color = as.factor(year))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(year)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+ggplot(jena, aes(x = FRic, y = meanFunction, color = as.factor(year))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(year)), method = "lm", se = FALSE) +
+  labs(title = "FRic",
+       x = "FRic", y = "meanFunction") +
+  theme_get()
+
+
+```
+
+```{r}
+#Tirando outliers
+jena_semot <- jena %>% 
+  filter(!raoq >75)
+
+mod1 <- glmmTMB(meanFunction ~ raoq + FRic + (1|year),data = jena_semot)
+summary(mod1)
+
+ggplot(jena_semot, aes(x = raoq, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(jena_semot, aes(x = raoq, y = meanFunction, color = as.factor(year))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(year)), method = "lm", se = FALSE) +
+  labs(title = "RAOQ",
+       x = "raoq", y = "meanFunction") +
+  theme_get()
+
+ggplot(jena_semot, aes(x = FRic, y = meanFunction)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "FRic",
+       x = "FRic", y = "meanFunction") +
+  theme_get()
+
+
+ggplot(jena_semot, aes(x = FRic, y = meanFunction, color=as.factor(year))) +
+  geom_point() +
+  geom_smooth(aes(group = as.factor(year)), method = "lm", se = FALSE) +
+  labs(title = "FRic",
+       x = "FRic", y = "meanFunction") +
+  theme_get()
+
+```
